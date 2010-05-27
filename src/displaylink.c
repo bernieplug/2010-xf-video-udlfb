@@ -195,20 +195,23 @@ DisplayLinkProbe(DriverPtr drv, int flags)
 	if ((numDevSections = xf86MatchDevice(DL_DRIVER_NAME, &devSections)) <= 0) 
 	    return FALSE;
 	
-	if (!xf86LoadDrvSubModule(drv, "fbdevhw"))
-	    return FALSE;
+	if (!xf86LoadDrvSubModule(drv, "fbdevhw")) {
+		xf86DrvMsg(1, X_INFO, "DI Error loading fbdevhw\n");
+		xfree(devSections);
+		return FALSE;
+	}
 	    
 	for (i = 0; i < numDevSections; i++) {
 
 	    pScrn = NULL;
 	    dev = xf86FindOptionValue(devSections[i]->options,"fbdev");
 
+		xf86DrvMsg(1, X_INFO, "using framebuffer %s\n", dev ? dev : "dev null");
+
 	    if (fbdevHWProbe(NULL,dev,NULL)) {
 
-		entity = xf86ClaimFbSlot(drv, 0,
-                                              devSections[i], TRUE);		
-		pScrn = xf86ConfigFbEntity(pScrn,0,entity,
-					       NULL,NULL,NULL,NULL);
+			entity = xf86ClaimFbSlot(drv, 0, devSections[i], TRUE);		
+			pScrn = xf86ConfigFbEntity(pScrn,0,entity, NULL,NULL,NULL,NULL);
 		
 	    }
 
@@ -230,8 +233,7 @@ DisplayLinkProbe(DriverPtr drv, int flags)
 	    	pScrn->LeaveVT       = fbdevHWLeaveVTWeak();
 	    	pScrn->ValidMode     = fbdevHWValidModeWeak();
 
-	    	xf86DrvMsg(pScrn->scrnIndex, X_INFO,
-		       "using %s\n", dev ? dev : "default device");
+	    	xf86DrvMsg(pScrn->scrnIndex, X_INFO, "using %s\n", dev ? dev : "default device");
 		}
 	}
 	xfree(devSections);
@@ -272,8 +274,11 @@ DisplayLinkPreInit(ScrnInfoPtr pScrn, int flags)
 
 
 	/* Check the number of entities, and fail if it isn't one. */
-	if (pScrn->numEntities != 1)
+	if (pScrn->numEntities != 1) {
+		
+		xf86DrvMsg(pScrn->scrnIndex, X_INFO, "pScrn->numEntities != 1\n");
 		return FALSE;
+	}
 
 	pScrn->monitor = pScrn->confScreen->monitor;
 
@@ -287,12 +292,17 @@ DisplayLinkPreInit(ScrnInfoPtr pScrn, int flags)
 	pScrn->racIoFlags = RAC_FB | RAC_COLORMAP | RAC_CURSOR | RAC_VIEWPORT;
 
 	/* open device */
-	if (!fbdevHWInit(pScrn,NULL,xf86FindOptionValue(fPtr->pEnt->device->options,"fbdev")))
+	if (!fbdevHWInit(pScrn,NULL,xf86FindOptionValue(fPtr->pEnt->device->options,"fbdev"))) {
+		xf86DrvMsg(pScrn->scrnIndex, X_INFO, "Unable to initialise framebuffer device %s != 1\n", 
+										xf86FindOptionValue(fPtr->pEnt->device->options,"fbdev"));
 		return FALSE;
+	}
 
 	// Damn, better to use fbdevHWGetFD()...
         fPtr->fd = open(xf86FindOptionValue(fPtr->pEnt->device->options,"fbdev"),O_WRONLY);
 	if (fPtr->fd < 0) {
+		xf86DrvMsg(pScrn->scrnIndex, X_INFO, "Unable to open framebuffer device %s != 1\n", 
+										xf86FindOptionValue(fPtr->pEnt->device->options,"fbdev"));
 		return FALSE;
 	}
 
@@ -303,8 +313,10 @@ DisplayLinkPreInit(ScrnInfoPtr pScrn, int flags)
 
 	default_depth = fbdevHWGetDepth(pScrn,&fbbpp);
 	if (!xf86SetDepthBpp(pScrn, default_depth, default_depth, fbbpp,
-			     Support24bppFb | Support32bppFb | SupportConvert32to24 | SupportConvert24to32))
+			     Support24bppFb | Support32bppFb | SupportConvert32to24 | SupportConvert24to32)) {
+		xf86DrvMsg(pScrn->scrnIndex, X_INFO, "Unable to set screen BPP != 1\n");
 		return FALSE;
+	}
 	xf86PrintDepthBpp(pScrn);
 
 	/* Get the depth24 pixmap format */
@@ -380,24 +392,26 @@ DisplayLinkPreInit(ScrnInfoPtr pScrn, int flags)
 
 	/* check for edid incongruences (as when udlfb is loaded before attaching a monitor) */
 	pScrn->currentMode = fbdevHWGetBuildinMode(pScrn) ;
-	
+
 	pScrn->modes = fPtr->output->funcs->get_modes(fPtr->output);
-	if (pScrn->modes->HDisplay <= pScrn->currentMode->HDisplay && pScrn->modes->VDisplay <= pScrn->currentMode->VDisplay) {
+	
+	if (pScrn->modes!=NULL && 
+		pScrn->modes->HDisplay <= pScrn->currentMode->HDisplay &&
+		pScrn->modes->VDisplay <= pScrn->currentMode->VDisplay) {
 		pScrn->currentMode = pScrn->modes ;
 	}
 	pScrn->virtualX = pScrn->currentMode->HDisplay ;
 	pScrn->virtualY = pScrn->currentMode->VDisplay ;
 
 	xf86CrtcSetSizeRange (pScrn, 320, 200, pScrn->virtualX, pScrn->virtualY);
-
 	xf86InitialConfiguration (pScrn, TRUE);
-
 	xf86PrintModes(pScrn);
 
 	pScrn->displayWidth = pScrn->virtualX;
 
 	xf86SetDpi(pScrn, 0, 0);
 
+	xf86DrvMsg(pScrn->scrnIndex, X_INFO, "exiting DisplayLinkPreInit\n");
 
 	return TRUE;
 }
@@ -553,6 +567,8 @@ DisplayLinkScreenInit(int scrnIndex, ScreenPtr pScreen, int argc, char **argv)
 	fPtr->CloseScreen = pScreen->CloseScreen;
 	pScreen->CloseScreen = DisplayLinkCloseScreen;
 
+	xf86DrvMsg(pScrn->scrnIndex, X_INFO, "Screen initialised\n");
+
 	return TRUE;
 }
 
@@ -604,44 +620,41 @@ DLBlockHandler(pointer data, OSTimePtr pTimeout, pointer pRead)
         DisplayLinkPtr fPtr = DLPTR(pScrn);
 	RegionPtr pRegion;
 	int coords[4];
+	
+	//xf86DrvMsg(pScrn->scrnIndex, X_INFO, "DLBlockHandler entered\n");
 
-	if (!fPtr->pDamage)
-		return;
+	if (!fPtr->pDamage) return;
 
 	pRegion = DamageRegion(fPtr->pDamage);
-        if (REGION_NOTEMPTY(pScreen, pRegion)) {
+    if (REGION_NOTEMPTY(pScreen, pRegion)) {
 		int         nbox = REGION_NUM_RECTS (pRegion);
-        	BoxPtr      pbox = REGION_RECTS (pRegion);
+       	BoxPtr      pbox = REGION_RECTS (pRegion);
 
 		coords[0] = pScrn->virtualX ;
-        	coords[1] = pScrn->virtualY ;
-        	coords[2] = 0 ;
-        	coords[3] = 0 ;
+       	coords[1] = pScrn->virtualY ;
+       	coords[2] = 0 ;
+       	coords[3] = 0 ;
 
 		while(nbox--) {
-                	if (pbox->x1 < coords[0])
-                        	coords[0] = pbox->x1 ;
+          	if (pbox->x1 < coords[0]) coords[0] = pbox->x1 ;
+            if (pbox->y1 < coords[1]) coords[1] = pbox->y1 ;
 
-                	if (pbox->y1 < coords[1])
-                        	coords[1] = pbox->y1 ;
+            if ( pbox->x2  > coords[2]) coords[2] = pbox->x2 ;
+            if ( pbox->y2 > coords[3]) coords[3] = pbox->y2 ;
 
-                	if ( pbox->x2  > coords[2])
-                        	coords[2] = pbox->x2 ;
+            pbox++;
+        }
 
-                	if ( pbox->y2 > coords[3])
-                        	coords[3] = pbox->y2 ;
+        coords[2] = coords[2] - coords[0] ;
+        coords[3] = coords[3] - coords[1] ;
 
-                	pbox++;
-        	}
+		//xf86DrvMsg(pScrn->scrnIndex, X_INFO, "DLBlockHandler - Damage rect x:%d y:%d w:%d h:%d\n", coords[0],coords[1],coords[2],coords[3]);
+        ioctl(fPtr->fd, DL_IOCTL_BLIT, &coords);
 
-        	coords[2] = coords[2] - coords[0] ;
-        	coords[3] = coords[3] - coords[1] ;
-
-        	ioctl(fPtr->fd, DL_IOCTL_BLIT, &coords);
-
-        	DamageEmpty(fPtr->pDamage);
-    	}
-
+        DamageEmpty(fPtr->pDamage);
+    }else {
+		//xf86DrvMsg(pScrn->scrnIndex, X_INFO, "DLBlockHandler - Damage Empty\n");
+	}
 
 }
 
